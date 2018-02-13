@@ -1,2 +1,4 @@
+[ ] read png magic
 [ ] read png width height metadata
+[ ] read psd magic
 [ ] start parsing psd file: metadata
