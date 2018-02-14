@@ -17,7 +17,7 @@ const PNG_MAGIC = new Uint8Array([
 ]);
 
 const headerBuffer = new Uint8Array(8);
-headerStream.on('data', (chunk) => {
+headerStream.on('data', chunk => {
     headerBuffer.set(chunk);
 });
 
