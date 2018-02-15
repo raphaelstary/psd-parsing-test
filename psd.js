@@ -1,33 +1,12 @@
 const fs = require('fs');
 
-const testStream = fs.createReadStream('test.psd', {
-    start: 0,
-    end: 3
-});
-
 const PSD_SIGNATURE = '8BPS';
-
-let signature;
-testStream.on('data', chunk => {
-    signature = chunk.toString();
-});
-
-testStream.on('end', () => {
-    const isPSD = signature == PSD_SIGNATURE;
-
-    if (isPSD) {
-        parsePSD();
-    } else {
-        throw 'file is no PNG';
-    }
-});
+const BLOCK_SIGNATURE = '8BIM';
 
 const COLOR_OFFSET = 26;
 const RESOURCES_OFFSET = COLOR_OFFSET + 4;
 const LAYER_MASK_INFO_OFFSET = 0;
 const IMAGE_OFFSET = 0;
-
-const BLOCK_SIGNATURE = '8BIM';
 
 class Header {
     constructor({version, channels, height, width, depth, color}) {
@@ -116,13 +95,19 @@ function parseResources(buffer) {
     return index;
 }
 
-function parsePSD() {
-    const stream = fs.createReadStream('test.psd');
+function parsePSD(file) {
+    const stream = fs.createReadStream(file);
 
-    let headerParsed = false;
+    let firstChunk = true;
     stream.on('data', chunk => {
-        if (!headerParsed) {
-            headerParsed = true;
+        if (firstChunk) {
+            firstChunk = false;
+
+            const signature = chunk.toString('utf8', 0, 4);
+            const isPSD = signature == PSD_SIGNATURE;
+            if (!isPSD) {
+                throw 'file is no PNG';
+            }
 
             const header = parseHeader(chunk);
             console.log(header);
@@ -136,3 +121,5 @@ function parsePSD() {
 
     });
 }
+
+parsePSD('test.psd');
