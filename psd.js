@@ -7,6 +7,21 @@ const Offset = Object.freeze({
     COLOR: 26, RESOURCES: 26 + 4, LAYER_MASK_INFO: 0, IMAGE: 0
 });
 
+const Resource = Object.freeze({
+    LAYER_STATE: 1024,
+    LAYERS_GROUP: 1026,
+    LAYER_COMPS: 1065,
+    MEASUREMENT: 1074,
+    TIMELINE: 1075,
+    SHEET_DISCLOSURE: 1076,
+    ONION_SKINS: 1078,
+    COUNT_INFO: 1080,
+    PRINT_INFO: 1082,
+    PRINT_STYLE: 1083,
+    PATH_SELECTION: 1088,
+    ORIGIN_PATH: 3000
+});
+
 const Type = Object.freeze({
     REFERENCE: 'obj ',
     DESCRIPTOR: 'Objc',
@@ -23,6 +38,10 @@ const Type = Object.freeze({
     CLASS_TOO: 'GlbC',
     ALIAS: 'alis',
     RAW_DATA: 'tdta'
+});
+
+const Unit = Object.freeze({
+    ANGLE: '#Ang', DENSITY: '#Rsl', DISTANCE: '#Rlt', NONE: '#Nne', PERCENT: '#Prc', PIXELS: '#Pxl'
 });
 
 class Header {
@@ -147,6 +166,35 @@ class ListItem {
     }
 }
 
+class EnumeratedItem {
+    constructor(type, value) {
+        this.type = type;
+        this.value = value;
+
+        Object.freeze(this);
+    }
+}
+
+class UnitItem {
+    constructor(type, value) {
+        this.type = type;
+        this.value = value;
+
+        Object.freeze(this);
+    }
+}
+
+class EnumeratedRef {
+    constructor(name, classID, typeID, value) {
+        this.name = name;
+        this.classID = classID;
+        this.typeID = typeID;
+        this.value = value;
+
+        Object.freeze(this);
+    }
+}
+
 class ReturnValue {
     constructor(value, cursor) {
         this.value = value;
@@ -154,24 +202,6 @@ class ReturnValue {
 
         Object.freeze(this);
     }
-}
-
-/**
- *
- * @param {Buffer} buffer
- * @param {Block} block
- */
-function parseTimeline(buffer, block) {
-    let cursor = block.dataOffset;
-
-    const descriptorVersion = buffer.readUInt32BE(cursor);
-    cursor += 4;
-
-    if (descriptorVersion != 16) {
-        throw `version ${descriptorVersion} not supported (yet)`;
-    }
-
-    return parseDescriptor(buffer, cursor);
 }
 
 function parseDouble(buffer, cursor) {
@@ -210,6 +240,49 @@ function parseList(buffer, cursor) {
     return new ReturnValue(list, cursor);
 }
 
+function parseID(buffer, cursor) {
+    const length = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    return new ReturnValue(
+        length == 0 ? buffer.toString('utf8', cursor, cursor += 4) : buffer.toString('utf8', cursor, cursor += length),
+        cursor);
+}
+
+function parseEnumerated(buffer, cursor) {
+    let type;
+    ({value: type, cursor} = parseID(buffer, cursor));
+
+    let value;
+    ({value: value, cursor} = parseID(buffer, cursor));
+
+    return new ReturnValue(new EnumeratedItem(type, value), cursor);
+}
+
+function parseEnumeratedRef(buffer, cursor) {
+    let name;
+    ({value: name, cursor} = parseText(buffer, cursor));
+
+    let classID;
+    ({value: classID, cursor} = parseID(buffer, cursor));
+
+    let typeID;
+    ({value: typeID, cursor} = parseID(buffer, cursor));
+
+    let enumValue;
+    ({value: enumValue, cursor} = parseID(buffer, cursor));
+
+    return new ReturnValue(new EnumeratedRef(name, classID, typeID, enumValue), cursor);
+}
+
+function parseUnitFloat(buffer, cursor) {
+    const type = buffer.toString('utf8', cursor, cursor += 4);
+
+    let value;
+    ({value, cursor} = parseDouble(buffer, cursor));
+
+    return new ReturnValue(new UnitItem(type, value), cursor);
+}
+
 function parseType(buffer, cursor, type) {
     if (type == Type.INTEGER) {
         return parseInteger(buffer, cursor);
@@ -228,6 +301,12 @@ function parseType(buffer, cursor, type) {
 
     } else if (type == Type.STRING) {
         return parseText(buffer, cursor);
+
+    } else if (type == Type.ENUMERATED) {
+        return parseEnumerated(buffer, cursor);
+
+    } else if (type == Type.UNIT_FLOAT) {
+        return parseUnitFloat(buffer, cursor);
     }
 
     throw type + ' not implemented (yet)';
@@ -238,23 +317,16 @@ function parseDescriptor(buffer, cursor) {
     let classIDName;
     ({value: classIDName, cursor} = parseText(buffer, cursor));
 
-    const length = buffer.readUInt32BE(cursor);
-    cursor += 4;
-    const classID = length == 0 ?
-        buffer.toString('utf8', cursor, cursor += 4) :
-        buffer.toString('utf8', cursor, cursor += length);
+    let classID;
+    ({value: classID, cursor} = parseID(buffer, cursor));
 
     const itemCount = buffer.readUInt32BE(cursor);
     cursor += 4;
 
     const items = {};
     for (let i = 0; i < itemCount; i++) {
-        const length = buffer.readUInt32BE(cursor);
-        cursor += 4;
-
-        const key = length == 0 ?
-            buffer.toString('utf8', cursor, cursor += 4) :
-            buffer.toString('utf8', cursor, cursor += length);
+        let key;
+        ({value: key, cursor} = parseID(buffer, cursor));
 
         const type = buffer.toString('utf8', cursor, cursor += 4);
 
@@ -265,6 +337,41 @@ function parseDescriptor(buffer, cursor) {
     }
 
     return new ReturnValue(new Descriptor(classIDName, classID, items), cursor);
+}
+
+/**
+ *
+ * @param {Buffer} buffer
+ * @param {Block} block
+ */
+function parseDescriptorBlock(buffer, block) {
+    let cursor = block.dataOffset;
+
+    const descriptorVersion = buffer.readUInt32BE(cursor);
+    cursor += 4;
+
+    if (descriptorVersion != 16) {
+        throw `version ${descriptorVersion} not supported (yet)`;
+    }
+
+    return parseDescriptor(buffer, cursor);
+}
+
+function parseLayerStateBlock(buffer, block) {
+    return buffer.readUInt16BE(block.dataOffset);
+}
+
+function parseLayersGroupBlock(buffer, block) {
+    let cursor = block.dataOffset;
+    const end = cursor + block.dataSize;
+
+    const layersGroupInfo = [];
+    while (cursor < end) {
+        layersGroupInfo.push(buffer.readUInt16BE(cursor));
+        cursor += 2;
+    }
+
+    return layersGroupInfo;
 }
 
 function parsePSD(file) {
@@ -286,9 +393,58 @@ function parsePSD(file) {
 
             const resourcesIndex = parseResources(chunk);
 
-            if (resourcesIndex[1075]) {
-                const {value: timeline} = parseTimeline(chunk, resourcesIndex[1075]);
+            if (resourcesIndex[Resource.LAYER_STATE]) {
+                const targetLayerIndex = parseLayerStateBlock(chunk, resourcesIndex[Resource.LAYER_STATE]);
+                console.log(targetLayerIndex);
+            }
+            if (resourcesIndex[Resource.LAYERS_GROUP]) {
+                const layersGroupInfo = parseLayersGroupBlock(chunk, resourcesIndex[Resource.LAYERS_GROUP]);
+                console.log(layersGroupInfo);
+            }
+
+            if (resourcesIndex[Resource.LAYER_COMPS]) {
+                const {value: layerComps} = parseDescriptorBlock(chunk, resourcesIndex[Resource.LAYER_COMPS]);
+                console.log(layerComps);
+            }
+
+            if (resourcesIndex[Resource.MEASUREMENT]) {
+                const {value: measurementScale} = parseDescriptorBlock(chunk, resourcesIndex[Resource.MEASUREMENT]);
+                console.log(measurementScale);
+            }
+
+            if (resourcesIndex[Resource.TIMELINE]) {
+                const {value: timeline} = parseDescriptorBlock(chunk, resourcesIndex[Resource.TIMELINE]);
                 console.log(timeline);
+            }
+
+            if (resourcesIndex[Resource.SHEET_DISCLOSURE]) {
+                const {value: sheetDisclosure} = parseDescriptorBlock(chunk, resourcesIndex[Resource.SHEET_DISCLOSURE]);
+                console.log(sheetDisclosure);
+            }
+
+            if (resourcesIndex[Resource.ONION_SKINS]) {
+                const {value: onionSkins} = parseDescriptorBlock(chunk, resourcesIndex[Resource.ONION_SKINS]);
+                console.log(onionSkins);
+            }
+
+            if (resourcesIndex[Resource.PRINT_INFO]) {
+                const {value: printInfo} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PRINT_INFO]);
+                console.log(printInfo);
+            }
+
+            if (resourcesIndex[Resource.PRINT_STYLE]) {
+                const {value: printStyle} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PRINT_STYLE]);
+                console.log(printStyle);
+            }
+
+            if (resourcesIndex[Resource.PATH_SELECTION]) {
+                const {value: selectionState} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PATH_SELECTION]);
+                console.log(selectionState);
+            }
+
+            if (resourcesIndex[Resource.ORIGIN_PATH]) {
+                const {value: originPathInfo} = parseDescriptorBlock(chunk, resourcesIndex[Resource.ORIGIN_PATH]);
+                console.log(originPathInfo);
             }
         }
     });
@@ -298,4 +454,4 @@ function parsePSD(file) {
     });
 }
 
-parsePSD('test-2.psd');
+parsePSD('test-3.psd');
