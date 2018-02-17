@@ -57,21 +57,6 @@ class Header {
     }
 }
 
-function parseHeader(buffer) {
-    if (buffer.length < Offset.COLOR) {
-        throw 'handling multiple chunks for parsing File Header not implemented yet';
-    }
-
-    return new Header({
-        version: buffer.readUInt16BE(4),
-        channels: buffer.readUInt16BE(12),
-        height: buffer.readUInt32BE(14),
-        width: buffer.readUInt32BE(18),
-        depth: buffer.readUInt16BE(22),
-        color: buffer.readUInt16BE(24)
-    });
-}
-
 class Block {
     constructor(id, name, offset, length, dataOffset, dataSize) {
         this.id = id;
@@ -83,58 +68,6 @@ class Block {
 
         Object.freeze(this);
     }
-}
-
-function parseResources(buffer) {
-    const index = {};
-
-    const resourcesLength = buffer.readUInt32BE(Offset.RESOURCES);
-
-    let cursor = Offset.RESOURCES + 4;
-
-    const max = Offset.RESOURCES + resourcesLength;
-
-    if (max > buffer.length) {
-        throw 'handling multiple chunks for parsing Image Resources not implemented yet';
-    }
-
-    while (cursor + 1 < max) {
-
-        const start = cursor;
-
-        const signature = buffer.toString('utf8', cursor, cursor += 4);
-        if (signature != BLOCK_SIGNATURE) {
-            throw 'not a new block';
-        }
-
-        const id = buffer.readUInt16BE(cursor);
-        cursor += 2;
-
-        const nameLength = buffer.readUInt8(cursor);
-        cursor++;
-        let name;
-        if (nameLength == 0) {
-            name = '';
-            cursor++;
-        } else {
-            name = buffer.toString('utf8', cursor, cursor + nameLength);
-            if (nameLength % 2 == 0) {
-                cursor += nameLength;
-            } else {
-                cursor += nameLength + 1;
-            }
-        }
-
-        const blockSize = buffer.readUInt32BE(cursor);
-        cursor += 4;
-
-        const end = cursor + (blockSize % 2 == 0 ? blockSize : blockSize + 1);
-        index[id] = new Block(id, name, start, end - start, cursor, blockSize);
-
-        cursor = end;
-    }
-
-    return index;
 }
 
 class Descriptor {
@@ -374,6 +307,124 @@ function parseLayersGroupBlock(buffer, block) {
     return layersGroupInfo;
 }
 
+function indexResources(buffer, start, end) {
+    const index = {};
+    let cursor = start;
+
+    while (cursor + 1 < end) {
+
+        const start = cursor;
+
+        const signature = buffer.toString('utf8', cursor, cursor += 4);
+        if (signature != BLOCK_SIGNATURE) {
+            throw 'not a new block';
+        }
+
+        const id = buffer.readUInt16BE(cursor);
+        cursor += 2;
+
+        const nameLength = buffer.readUInt8(cursor);
+        cursor++;
+        let name;
+        if (nameLength == 0) {
+            name = '';
+            cursor++;
+        } else {
+            name = buffer.toString('utf8', cursor, cursor + nameLength);
+            if (nameLength % 2 == 0) {
+                cursor += nameLength;
+            } else {
+                cursor += nameLength + 1;
+            }
+        }
+
+        const blockSize = buffer.readUInt32BE(cursor);
+        cursor += 4;
+
+        const end = cursor + (blockSize % 2 == 0 ? blockSize : blockSize + 1);
+        index[id] = new Block(id, name, start, end - start, cursor, blockSize);
+
+        cursor = end;
+    }
+
+    return index;
+}
+
+function parseResources(buffer) {
+
+    const resourcesLength = buffer.readUInt32BE(Offset.RESOURCES);
+    const max = Offset.RESOURCES + resourcesLength;
+
+    if (max > buffer.length) {
+        throw 'handling multiple chunks for parsing Image Resources not implemented yet';
+    }
+
+    const index = indexResources(buffer, Offset.RESOURCES + 4, max);
+
+    const resources = {};
+
+    if (index[Resource.LAYER_STATE]) {
+        resources.targetLayerIndex = parseLayerStateBlock(buffer, index[Resource.LAYER_STATE]);
+    }
+    if (index[Resource.LAYERS_GROUP]) {
+        resources.layersGroupInfo = parseLayersGroupBlock(buffer, index[Resource.LAYERS_GROUP]);
+    }
+
+    if (index[Resource.LAYER_COMPS]) {
+        ({value: resources.layerComps} = parseDescriptorBlock(buffer, index[Resource.LAYER_COMPS]));
+    }
+
+    if (index[Resource.MEASUREMENT]) {
+        ({value: resources.measurementScale} = parseDescriptorBlock(buffer, index[Resource.MEASUREMENT]));
+    }
+
+    if (index[Resource.TIMELINE]) {
+        ({value: resources.timeline} = parseDescriptorBlock(buffer, index[Resource.TIMELINE]));
+    }
+
+    if (index[Resource.SHEET_DISCLOSURE]) {
+        ({value: resources.sheetDisclosure} = parseDescriptorBlock(buffer, index[Resource.SHEET_DISCLOSURE]));
+    }
+
+    if (index[Resource.ONION_SKINS]) {
+        ({value: resources.onionSkins} = parseDescriptorBlock(buffer, index[Resource.ONION_SKINS]));
+    }
+
+    if (index[Resource.PRINT_INFO]) {
+        ({value: resources.printInfo} = parseDescriptorBlock(buffer, index[Resource.PRINT_INFO]));
+    }
+
+    if (index[Resource.PRINT_STYLE]) {
+        ({value: resources.printStyle} = parseDescriptorBlock(buffer, index[Resource.PRINT_STYLE]));
+    }
+
+    if (index[Resource.PATH_SELECTION]) {
+        ({value: resources.selectionState} = parseDescriptorBlock(buffer, index[Resource.PATH_SELECTION]));
+    }
+
+    if (index[Resource.ORIGIN_PATH]) {
+        ({value: resources.originPathInfo} = parseDescriptorBlock(buffer, index[Resource.ORIGIN_PATH]));
+    }
+
+    return resources;
+}
+
+
+function parseHeader(buffer) {
+    if (buffer.length < Offset.COLOR) {
+        throw 'handling multiple chunks for parsing File Header not implemented yet';
+    }
+
+    return new Header({
+        version: buffer.readUInt16BE(4),
+        channels: buffer.readUInt16BE(12),
+        height: buffer.readUInt32BE(14),
+        width: buffer.readUInt32BE(18),
+        depth: buffer.readUInt16BE(22),
+        color: buffer.readUInt16BE(24)
+    });
+}
+
 function parsePSD(file) {
     const stream = fs.createReadStream(file);
 
@@ -391,61 +442,8 @@ function parsePSD(file) {
             const header = parseHeader(chunk);
             console.log(header);
 
-            const resourcesIndex = parseResources(chunk);
-
-            if (resourcesIndex[Resource.LAYER_STATE]) {
-                const targetLayerIndex = parseLayerStateBlock(chunk, resourcesIndex[Resource.LAYER_STATE]);
-                console.log(targetLayerIndex);
-            }
-            if (resourcesIndex[Resource.LAYERS_GROUP]) {
-                const layersGroupInfo = parseLayersGroupBlock(chunk, resourcesIndex[Resource.LAYERS_GROUP]);
-                console.log(layersGroupInfo);
-            }
-
-            if (resourcesIndex[Resource.LAYER_COMPS]) {
-                const {value: layerComps} = parseDescriptorBlock(chunk, resourcesIndex[Resource.LAYER_COMPS]);
-                console.log(layerComps);
-            }
-
-            if (resourcesIndex[Resource.MEASUREMENT]) {
-                const {value: measurementScale} = parseDescriptorBlock(chunk, resourcesIndex[Resource.MEASUREMENT]);
-                console.log(measurementScale);
-            }
-
-            if (resourcesIndex[Resource.TIMELINE]) {
-                const {value: timeline} = parseDescriptorBlock(chunk, resourcesIndex[Resource.TIMELINE]);
-                console.log(timeline);
-            }
-
-            if (resourcesIndex[Resource.SHEET_DISCLOSURE]) {
-                const {value: sheetDisclosure} = parseDescriptorBlock(chunk, resourcesIndex[Resource.SHEET_DISCLOSURE]);
-                console.log(sheetDisclosure);
-            }
-
-            if (resourcesIndex[Resource.ONION_SKINS]) {
-                const {value: onionSkins} = parseDescriptorBlock(chunk, resourcesIndex[Resource.ONION_SKINS]);
-                console.log(onionSkins);
-            }
-
-            if (resourcesIndex[Resource.PRINT_INFO]) {
-                const {value: printInfo} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PRINT_INFO]);
-                console.log(printInfo);
-            }
-
-            if (resourcesIndex[Resource.PRINT_STYLE]) {
-                const {value: printStyle} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PRINT_STYLE]);
-                console.log(printStyle);
-            }
-
-            if (resourcesIndex[Resource.PATH_SELECTION]) {
-                const {value: selectionState} = parseDescriptorBlock(chunk, resourcesIndex[Resource.PATH_SELECTION]);
-                console.log(selectionState);
-            }
-
-            if (resourcesIndex[Resource.ORIGIN_PATH]) {
-                const {value: originPathInfo} = parseDescriptorBlock(chunk, resourcesIndex[Resource.ORIGIN_PATH]);
-                console.log(originPathInfo);
-            }
+            const resources = parseResources(chunk);
+            console.log(resources);
         }
     });
 
