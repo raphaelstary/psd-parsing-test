@@ -365,6 +365,26 @@ function indexResources(buffer, start, end) {
     return index;
 }
 
+function parseHeader(buffer) {
+
+    checkSignature(buffer);
+
+    const header = new Header({
+        version: buffer.readUInt16BE(4),
+        channels: buffer.readUInt16BE(12),
+        height: buffer.readUInt32BE(14),
+        width: buffer.readUInt32BE(18),
+        depth: buffer.readUInt16BE(22),
+        color: buffer.readUInt16BE(24)
+    });
+
+    if (header.version != 1) {
+        throw `version ${header.version} not supported (yet)`;
+    }
+
+    return header;
+}
+
 function parseResources(buffer, length, offset) {
 
     const start = offset || 0;
@@ -418,35 +438,18 @@ function parseResources(buffer, length, offset) {
     return resources;
 }
 
-function parseHeader(buffer) {
-
-    checkSignature(buffer);
-
-    const header = new Header({
-        version: buffer.readUInt16BE(4),
-        channels: buffer.readUInt16BE(12),
-        height: buffer.readUInt32BE(14),
-        width: buffer.readUInt32BE(18),
-        depth: buffer.readUInt16BE(22),
-        color: buffer.readUInt16BE(24)
-    });
-
-    if (header.version != 1) {
-        throw `version ${header.version} not supported (yet)`;
-    }
-
-    return header;
-}
-
 function parseLayerMaskInfo(buffer, length, offset) {
+    const start = offset || 0;
+    const max = length || buffer.length;
 
+    console.log(buffer.readUInt32BE(0));
 }
 
-function getSectionMarkers(buffer, offset) {
+function getSectionMarkers(buffer, totalLength, offset) {
     const start = offset || 0;
     const length = buffer.readUInt32BE(start);
     const end = start + length;
-    const offsetNext = end % 4 == 0 ? 0 : 2;
+    const offsetNext = (totalLength + end) % 4 == 0 ? 0 : 2;
     const buffering = end > buffer.length;
 
     return new SectionMarkers(start, end, length, offsetNext, buffering);
@@ -474,6 +477,7 @@ function parsePSD(file) {
     let section;
     let markers;
     let cursor;
+    let totalLength = 0;
 
     let state = State.NEXT;
 
@@ -532,7 +536,9 @@ function parsePSD(file) {
     }
 
     function startSection(chunk, parseSection, sectionMarkers) {
-        markers = sectionMarkers || getSectionMarkers(chunk);
+        markers = sectionMarkers || getSectionMarkers(chunk, totalLength);
+        totalLength += markers.length + markers.offsetNext;
+
         if (markers.buffering) {
             section = Buffer.allocUnsafe(markers.length);
             cursor = chunk.copy(section);
