@@ -3,9 +3,7 @@ const fs = require('fs');
 const PSD_SIGNATURE = '8BPS';
 const BLOCK_SIGNATURE = '8BIM';
 
-const Offset = Object.freeze({
-    COLOR: 26, RESOURCES: 26 + 4, LAYER_MASK_INFO: 0, IMAGE: 0
-});
+const HEADER_LENGTH = 26;
 
 const Resource = Object.freeze({
     LAYER_STATE: 1024,
@@ -132,6 +130,28 @@ class ReturnValue {
     constructor(value, cursor) {
         this.value = value;
         this.cursor = cursor;
+
+        Object.freeze(this);
+    }
+}
+
+class SectionMarkers {
+    constructor(start, end, length, offsetNext, buffering) {
+        this.start = start;
+        this.end = end;
+        this.length = length;
+        this.offsetNext = offsetNext;
+        this.buffering = buffering;
+
+        Object.freeze(this);
+    }
+}
+
+class SectionResult {
+    constructor(ready, usedChunkLength, data) {
+        this.ready = ready;
+        this.usedChunkLength = usedChunkLength;
+        this.data = data;
 
         Object.freeze(this);
     }
@@ -272,11 +292,6 @@ function parseDescriptor(buffer, cursor) {
     return new ReturnValue(new Descriptor(classIDName, classID, items), cursor);
 }
 
-/**
- *
- * @param {Buffer} buffer
- * @param {Block} block
- */
 function parseDescriptorBlock(buffer, block) {
     let cursor = block.dataOffset;
 
@@ -350,16 +365,10 @@ function indexResources(buffer, start, end) {
     return index;
 }
 
-function parseResources(buffer) {
+function parseResources(buffer, length, offset) {
 
-    const resourcesLength = buffer.readUInt32BE(Offset.RESOURCES);
-    const max = Offset.RESOURCES + resourcesLength;
-
-    if (max > buffer.length) {
-        throw 'handling multiple chunks for parsing Image Resources not implemented yet';
-    }
-
-    const index = indexResources(buffer, Offset.RESOURCES + 4, max);
+    const start = offset || 0;
+    const index = indexResources(buffer, start + 4, length || buffer.length);
 
     const resources = {};
 
@@ -409,13 +418,11 @@ function parseResources(buffer) {
     return resources;
 }
 
-
 function parseHeader(buffer) {
-    if (buffer.length < Offset.COLOR) {
-        throw 'handling multiple chunks for parsing File Header not implemented yet';
-    }
 
-    return new Header({
+    checkSignature(buffer);
+
+    const header = new Header({
         version: buffer.readUInt16BE(4),
         channels: buffer.readUInt16BE(12),
         height: buffer.readUInt32BE(14),
@@ -423,33 +430,180 @@ function parseHeader(buffer) {
         depth: buffer.readUInt16BE(22),
         color: buffer.readUInt16BE(24)
     });
+
+    if (header.version != 1) {
+        throw `version ${header.version} not supported (yet)`;
+    }
+
+    return header;
 }
+
+function parseLayerMaskInfo(buffer, length, offset) {
+
+}
+
+function getSectionMarkers(buffer, offset) {
+    const start = offset || 0;
+    const length = buffer.readUInt32BE(start);
+    const end = start + length;
+    const offsetNext = end % 4 == 0 ? 0 : 2;
+    const buffering = end > buffer.length;
+
+    return new SectionMarkers(start, end, length, offsetNext, buffering);
+}
+
+const State = Object.freeze({
+    NEXT: 1, HEADER: 2, RESOURCES: 3, LAYER_MASK: 4, READY: 5
+});
+
+function checkSignature(buffer) {
+    const signature = buffer.toString('utf8', 0, 4);
+    const isPSD = signature == PSD_SIGNATURE;
+    if (!isPSD) {
+        throw 'file is no PNG';
+    }
+}
+
+const parsedData = {};
 
 function parsePSD(file) {
     const stream = fs.createReadStream(file);
 
-    let firstChunk = true;
-    stream.on('data', chunk => {
-        if (firstChunk) {
-            firstChunk = false;
+    let temp;
 
-            const signature = chunk.toString('utf8', 0, 4);
-            const isPSD = signature == PSD_SIGNATURE;
-            if (!isPSD) {
-                throw 'file is no PNG';
+    let section;
+    let markers;
+    let cursor;
+
+    let state = State.NEXT;
+
+    let headerQueued = true;
+    let resourcesQueued = true;
+    let layerMaskQueued = true;
+
+    function sectionReady(key, result, currentBuffer) {
+        parsedData[key] = result.data;
+
+        state = State.NEXT;
+        const buffer = Buffer.from(currentBuffer.buffer, (currentBuffer.buffer.byteLength - currentBuffer.length)
+            + result.usedChunkLength + markers.offsetNext);
+
+        if (buffer.length < 4) {
+            temp = buffer;
+        } else {
+            nextSection(buffer);
+        }
+    }
+
+    function nextSection(chunk) {
+
+        if (headerQueued) {
+            headerQueued = false;
+            state = State.HEADER;
+
+            const result = startSection(chunk, parseHeader,
+                new SectionMarkers(0, HEADER_LENGTH, HEADER_LENGTH, 4, chunk.length < HEADER_LENGTH));
+            if (result.ready) {
+                sectionReady('header', result, chunk);
             }
 
-            const header = parseHeader(chunk);
-            console.log(header);
+        } else if (resourcesQueued) {
+            resourcesQueued = false;
+            state = State.RESOURCES;
 
-            const resources = parseResources(chunk);
-            console.log(resources);
+            const result = startSection(chunk, parseResources);
+            if (result.ready) {
+                sectionReady('resources', result, chunk);
+            }
+
+        } else if (layerMaskQueued) {
+            layerMaskQueued = false;
+            state = State.LAYER_MASK;
+
+            const result = startSection(chunk, parseLayerMaskInfo);
+            if (result.ready) {
+                sectionReady('layerMaskInfo', result, chunk);
+            }
+
+        } else {
+            state = State.READY;
+            ready(parsedData);
+        }
+    }
+
+    function startSection(chunk, parseSection, sectionMarkers) {
+        markers = sectionMarkers || getSectionMarkers(chunk);
+        if (markers.buffering) {
+            section = Buffer.allocUnsafe(markers.length);
+            cursor = chunk.copy(section);
+
+            return new SectionResult(false);
+        }
+        const buffer = Buffer.from(chunk.buffer, chunk.buffer.byteLength - chunk.length, markers.length);
+        return new SectionResult(true, markers.length, parseSection(buffer));
+    }
+
+    function resumeSection(chunk, parseSection) {
+        if (cursor + chunk.length < markers.length) {
+            cursor += chunk.copy(section, cursor);
+            return new SectionResult(false);
+        }
+
+        const sourceEnd = markers.length - cursor;
+        chunk.copy(section, cursor, 0, sourceEnd);
+
+        return new SectionResult(true, sourceEnd, parseSection(section));
+    }
+
+    function drainBuffer(chunk) {
+        let buffer;
+        if (temp) {
+            buffer = Buffer.concat([temp, chunk], temp.length + chunk.length);
+            temp = undefined;
+        } else {
+            buffer = chunk;
+        }
+        return buffer;
+    }
+
+    stream.on('data', chunk => {
+        const buffer = drainBuffer(chunk);
+
+        if (buffer.length < 4) {
+            temp = buffer;
+            return;
+        }
+
+        if (state == State.NEXT) {
+            nextSection(buffer);
+
+        } else if (state == State.HEADER) {
+            const result = resumeSection(buffer, parseHeader);
+            if (result.ready) {
+                sectionReady('header', result, buffer);
+            }
+
+        } else if (state == State.RESOURCES) {
+            const result = resumeSection(buffer, parseResources);
+            if (result.ready) {
+                sectionReady('resources', result, buffer);
+            }
+
+        } else if (state == State.LAYER_MASK) {
+            const result = resumeSection(buffer, parseLayerMaskInfo);
+            if (result.ready) {
+                sectionReady('layerMaskInfo', result, buffer);
+            }
         }
     });
 
     stream.on('end', () => {
-
+        console.log('read all data :)');
     });
+}
+
+function ready(data) {
+    console.log(`parsed data ready: ${JSON.stringify(data, undefined, 4)}`);
 }
 
 parsePSD('test-3.psd');
