@@ -449,7 +449,7 @@ function getSectionMarkers(buffer, offset) {
     const start = offset || 0;
     const length = buffer.readUInt32BE(start);
     const end = start + length;
-    const offsetNext = (end % 2 == 0 ? 0 : 1) + 4;
+    const offsetNext = end % 2 == 0 ? 0 : 1;
     const buffering = end > buffer.length;
 
     return new SectionMarkers(start, end, length, offsetNext, buffering);
@@ -524,7 +524,16 @@ function parsePSD(file) {
             layerMaskQueued = false;
             state = State.LAYER_MASK;
 
-            const result = startSection(chunk, parseLayerMaskInfo);
+            const unaccountedGap = chunk.readUInt32BE(0);
+            let nextChunk;
+            if (unaccountedGap === 1) {
+                const byteOffset = bufferLength - chunk.length + 4;
+                nextChunk = Buffer.from(chunk.buffer, byteOffset, bufferLength - byteOffset);
+            } else {
+                nextChunk = chunk;
+            }
+
+            const result = startSection(nextChunk, parseLayerMaskInfo);
             if (result.ready) {
                 sectionReady('layerMaskInfo', result, chunk);
             }
