@@ -445,11 +445,11 @@ function parseLayerMaskInfo(buffer, length, offset) {
     console.log(buffer.readUInt32BE(0));
 }
 
-function getSectionMarkers(buffer, totalLength, offset) {
+function getSectionMarkers(buffer, offset) {
     const start = offset || 0;
     const length = buffer.readUInt32BE(start);
     const end = start + length;
-    const offsetNext = (totalLength + end) % 4 == 0 ? 0 : 2;
+    const offsetNext = (end % 2 == 0 ? 0 : 1) + 4;
     const buffering = end > buffer.length;
 
     return new SectionMarkers(start, end, length, offsetNext, buffering);
@@ -473,11 +473,11 @@ function parsePSD(file) {
     const stream = fs.createReadStream(file);
 
     let temp;
+    let bufferLength;
 
     let section;
     let markers;
     let cursor;
-    let totalLength = 0;
 
     let state = State.NEXT;
 
@@ -489,8 +489,8 @@ function parsePSD(file) {
         parsedData[key] = result.data;
 
         state = State.NEXT;
-        const buffer = Buffer.from(currentBuffer.buffer, (currentBuffer.buffer.byteLength - currentBuffer.length)
-            + result.usedChunkLength + markers.offsetNext);
+        const byteOffset = bufferLength - currentBuffer.length + result.usedChunkLength + markers.offsetNext;
+        const buffer = Buffer.from(currentBuffer.buffer, byteOffset, bufferLength - byteOffset);
 
         if (buffer.length < 4) {
             temp = buffer;
@@ -536,16 +536,14 @@ function parsePSD(file) {
     }
 
     function startSection(chunk, parseSection, sectionMarkers) {
-        markers = sectionMarkers || getSectionMarkers(chunk, totalLength);
-        totalLength += markers.length + markers.offsetNext;
-
+        markers = sectionMarkers || getSectionMarkers(chunk);
         if (markers.buffering) {
             section = Buffer.allocUnsafe(markers.length);
             cursor = chunk.copy(section);
 
             return new SectionResult(false);
         }
-        const buffer = Buffer.from(chunk.buffer, chunk.buffer.byteLength - chunk.length, markers.length);
+        const buffer = Buffer.from(chunk.buffer, bufferLength - chunk.length, markers.length);
         return new SectionResult(true, markers.length, parseSection(buffer));
     }
 
@@ -569,6 +567,8 @@ function parsePSD(file) {
         } else {
             buffer = chunk;
         }
+        bufferLength = buffer.length;
+
         return buffer;
     }
 
