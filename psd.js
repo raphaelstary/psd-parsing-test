@@ -322,18 +322,22 @@ function parseLayersGroupBlock(buffer, block) {
     return layersGroupInfo;
 }
 
+function checkBlockSignature(buffer, cursor) {
+    const signature = buffer.toString('utf8', cursor, cursor += 4);
+    if (signature != BLOCK_SIGNATURE) {
+        throw 'not a new block';
+    }
+    return cursor;
+}
+
 function indexResources(buffer, start, end) {
     const index = {};
     let cursor = start;
 
-    while (cursor + 1 < end) {
+    while (cursor < end) {
 
         const start = cursor;
-
-        const signature = buffer.toString('utf8', cursor, cursor += 4);
-        if (signature != BLOCK_SIGNATURE) {
-            throw 'not a new block';
-        }
+        cursor = checkBlockSignature(buffer, cursor);
 
         const id = buffer.readUInt16BE(cursor);
         cursor += 2;
@@ -447,12 +451,13 @@ function parseLayerMaskInfo(buffer, length, offset) {
 
 function getSectionMarkers(buffer, offset) {
     const start = offset || 0;
-    const length = buffer.readUInt32BE(start);
-    const end = start + length;
+    const dataLength = buffer.readUInt32BE(start);
+    const totalLength = dataLength + 4;
+    const end = start + totalLength;
     const offsetNext = end % 2 == 0 ? 0 : 1;
     const buffering = end > buffer.length;
 
-    return new SectionMarkers(start, end, length, offsetNext, buffering);
+    return new SectionMarkers(start, end, totalLength, offsetNext, buffering);
 }
 
 const State = Object.freeze({
@@ -524,16 +529,7 @@ function parsePSD(file) {
             layerMaskQueued = false;
             state = State.LAYER_MASK;
 
-            const unaccountedGap = chunk.readUInt32BE(0);
-            let nextChunk;
-            if (unaccountedGap === 1) {
-                const byteOffset = bufferLength - chunk.length + 4;
-                nextChunk = Buffer.from(chunk.buffer, byteOffset, bufferLength - byteOffset);
-            } else {
-                nextChunk = chunk;
-            }
-
-            const result = startSection(nextChunk, parseLayerMaskInfo);
+            const result = startSection(chunk, parseLayerMaskInfo);
             if (result.ready) {
                 sectionReady('layerMaskInfo', result, chunk);
             }
