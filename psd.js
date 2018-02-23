@@ -20,6 +20,10 @@ const Resource = Object.freeze({
     ORIGIN_PATH: 3000
 });
 
+const LayerAddOn = Object.freeze({
+    METADATA_SETTING: 'shmd', LAYER_ID: 'lyid'
+});
+
 const Type = Object.freeze({
     REFERENCE: 'obj ',
     DESCRIPTOR: 'Objc',
@@ -38,9 +42,26 @@ const Type = Object.freeze({
     RAW_DATA: 'tdta'
 });
 
-const Unit = Object.freeze({
-    ANGLE: '#Ang', DENSITY: '#Rsl', DISTANCE: '#Rlt', NONE: '#Nne', PERCENT: '#Prc', PIXELS: '#Pxl'
-});
+const BIT_0 = 0b00000001;
+const BIT_1 = 0b00000010;
+// not used atm - maybe remove later
+// const BIT_2 = 0b00000100;
+// const BIT_3 = 0b00001000;
+// const BIT_4 = 0b00010000;
+// const BIT_5 = 0b00100000;
+// const BIT_6 = 0b01000000;
+// const BIT_7 = 0b10000000;
+//
+// const Unit = Object.freeze({
+//     ANGLE: '#Ang', DENSITY: '#Rsl', DISTANCE: '#Rlt', NONE: '#Nne', PERCENT: '#Prc', PIXELS: '#Pxl'
+// });
+
+class ParseError extends Error {
+    constructor(...params) {
+        super(...params);
+        this.name = 'ParseError';
+    }
+}
 
 class Header {
     constructor({version, channels, height, width, depth, color}) {
@@ -50,6 +71,41 @@ class Header {
         this.width = width;
         this.depth = depth;
         this.color = color;
+
+        Object.freeze(this);
+    }
+}
+
+class AddOnBlock {
+    constructor(key, offset, length, dataOffset, dataSize) {
+        this.key = key;
+        this.offset = offset;
+        this.length = length;
+        this.dataOffset = dataOffset;
+        this.dataSize = dataSize;
+
+        Object.freeze(this);
+    }
+}
+
+class LayerRecord {
+    constructor({top, left, bottom, right, channelCount, channels, blendMode, opacity, clipping, isProtected, hidden, grayBlend, channelBlendings, name, addOns}) {
+
+        this.top = top;
+        this.left = left;
+        this.bottom = bottom;
+        this.right = right;
+        this.channelCount = channelCount;
+        this.channels = channels;
+        this.blendMode = blendMode;
+        this.opacity = opacity;
+        this.clipping = clipping;
+        this.isProtected = isProtected;
+        this.hidden = hidden;
+        this.grayBlend = grayBlend;
+        this.channelBlendings = channelBlendings;
+        this.name = name;
+        this.addOns = addOns;
 
         Object.freeze(this);
     }
@@ -262,7 +318,7 @@ function parseType(buffer, cursor, type) {
         return parseUnitFloat(buffer, cursor);
     }
 
-    throw type + ' not implemented (yet)';
+    throw new ParseError(type + ' not implemented (yet)');
 }
 
 function parseDescriptor(buffer, cursor) {
@@ -299,7 +355,7 @@ function parseDescriptorBlock(buffer, block) {
     cursor += 4;
 
     if (descriptorVersion != 16) {
-        throw `version ${descriptorVersion} not supported (yet)`;
+        throw new ParseError(`version ${descriptorVersion} not supported (yet)`);
     }
 
     return parseDescriptor(buffer, cursor);
@@ -325,7 +381,7 @@ function parseLayersGroupBlock(buffer, block) {
 function checkBlockSignature(buffer, cursor) {
     const signature = buffer.toString('utf8', cursor, cursor += 4);
     if (signature != BLOCK_SIGNATURE) {
-        throw 'not a new block';
+        throw new ParseError('not a new block');
     }
     return cursor;
 }
@@ -366,7 +422,7 @@ function indexResources(buffer, start, end) {
         cursor = end;
     }
 
-    return index;
+    return Object.freeze(index);
 }
 
 function parseHeader(buffer) {
@@ -383,18 +439,20 @@ function parseHeader(buffer) {
     });
 
     if (header.version != 1) {
-        throw `version ${header.version} not supported (yet)`;
+        throw new ParseError(`version ${header.version} not supported (yet)`);
     }
 
     return header;
 }
 
-function parseResources(buffer, length, offset) {
+function parseResources(buffer, end, offset) {
 
     const start = offset || 0;
-    const index = indexResources(buffer, start + 4, length || buffer.length);
+    const index = indexResources(buffer, start + 4, end || buffer.length);
 
-    const resources = {};
+    const resources = {
+        index: index
+    };
 
     if (index[Resource.LAYER_STATE]) {
         resources.targetLayerIndex = parseLayerStateBlock(buffer, index[Resource.LAYER_STATE]);
@@ -439,14 +497,261 @@ function parseResources(buffer, length, offset) {
         ({value: resources.originPathInfo} = parseDescriptorBlock(buffer, index[Resource.ORIGIN_PATH]));
     }
 
-    return resources;
+    return Object.freeze(resources);
 }
 
-function parseLayerMaskInfo(buffer, length, offset) {
-    const start = offset || 0;
-    const max = length || buffer.length;
+function parseLayerMaskInfo(buffer, end, offset) {
+    let cursor = offset || 0;
+    cursor += 4;
 
-    console.log(buffer.readUInt32BE(0));
+    const infoLength = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    const infoEnd = cursor + infoLength;
+
+    const layerCount = buffer.readUInt16BE(cursor);
+    cursor += 2;
+
+    if (infoLength > 0) {
+        // what should I do?
+    }
+
+    const layers = [];
+    for (let i = 0; i < layerCount; i++) {
+        let currentLayer;
+        ({value: currentLayer, cursor} = parseLayer(buffer, cursor));
+        layers.push(currentLayer);
+    }
+    Object.freeze(layers);
+
+    console.log(layers);
+
+}
+
+function parseLayer(buffer, cursor) {
+    const top = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    const left = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    const bottom = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    const right = buffer.readUInt32BE(cursor);
+    cursor += 4;
+
+    const channelCount = buffer.readUInt16BE(cursor);
+    cursor += 2;
+
+    const channels = [];
+    for (let i = 0; i < channelCount; i++) {
+        channels.push(Object.freeze({
+            channelID: buffer.readInt16BE(cursor), length: buffer.readUInt32BE(cursor + 2)
+        }));
+        cursor += 6;
+    }
+
+    if (buffer.toString('utf8', cursor, cursor += 4) != BLOCK_SIGNATURE) {
+        throw new ParseError('missing blend mode signature');
+    }
+
+    const blendMode = buffer.toString('utf8', cursor, cursor += 4);
+
+    const opacity = buffer.readUInt8(cursor);
+    cursor++;
+
+    const clipping = buffer.readUInt8(cursor);
+    cursor++;
+
+    const flags = buffer.readUInt8(cursor);
+    cursor++;
+
+    const isProtected = (flags & BIT_0) != 0;
+    const hidden = (flags & BIT_1) != 0;
+
+    cursor++; // filler (zero)
+
+    const extraDataLength = buffer.readUInt32BE(cursor);
+    cursor += 4;
+    const extraDataEnd = cursor + extraDataLength;
+
+    const maskLength = buffer.readUInt32BE(cursor);
+    cursor += 4;
+
+    const hasMask = maskLength > 0;
+    if (hasMask) {
+        // todo need to parse Layer mask / adjustment layer data
+    }
+
+    // todo should I change channelCount in channelBlendings for loop with this blendingRangesDataLength value?
+    const blendingRangesDataLength = buffer.readUInt32BE(cursor);
+    cursor += 4;
+
+    const grayBlendSrc = Object.freeze([
+        buffer.readUInt8(cursor),
+        buffer.readUInt8(cursor + 1),
+        buffer.readUInt8(cursor + 2),
+        buffer.readUInt8(cursor + 3)
+    ]);
+    cursor += 4;
+
+    const grayBlendDest = Object.freeze([
+        buffer.readUInt8(cursor),
+        buffer.readUInt8(cursor + 1),
+        buffer.readUInt8(cursor + 2),
+        buffer.readUInt8(cursor + 3)
+    ]);
+    cursor += 4;
+
+    const grayBlend = Object.freeze({
+        src: grayBlendSrc, dest: grayBlendDest
+    });
+
+    const channelBlendings = [];
+    for (let j = 0; j < channelCount; j++) {
+        channelBlendings.push({
+            src: Object.freeze([
+                buffer.readUInt8(cursor),
+                buffer.readUInt8(cursor + 1),
+                buffer.readUInt8(cursor + 2),
+                buffer.readUInt8(cursor + 3)
+            ]), dest: Object.freeze([
+                buffer.readUInt8(cursor + 4),
+                buffer.readUInt8(cursor + 4 + 1),
+                buffer.readUInt8(cursor + 4 + 2),
+                buffer.readUInt8(cursor + 4 + 3)
+            ])
+        });
+        cursor += 8;
+    }
+    Object.freeze(channelBlendings);
+
+    const nameLength = buffer.readUInt8(cursor);
+    cursor++;
+
+    let name;
+    if (nameLength == 0) {
+        name = '';
+        cursor += 3;
+
+    } else {
+        name = buffer.toString('utf8', cursor, cursor + nameLength);
+
+        let padding = 0;
+        while ((1 + nameLength + padding) % 4 != 0) {
+            padding++;
+        }
+        cursor += nameLength + padding;
+    }
+
+    const args = {
+        top: top,
+        left: left,
+        bottom: bottom,
+        right: right,
+        channelCount: channelCount,
+        channels: channels,
+        blendMode: blendMode,
+        opacity: opacity,
+        clipping: clipping,
+        isProtected: isProtected,
+        hidden: hidden,
+        grayBlend: grayBlend,
+        channelBlendings: channelBlendings,
+        name: name
+    };
+
+    if (cursor < extraDataEnd && buffer.toString('utf8', cursor, cursor + 4) == BLOCK_SIGNATURE) {
+        // found additional layer information - yay :)
+        args.addOns = parseLayerAddOns(buffer, extraDataEnd, cursor);
+    }
+
+    return new ReturnValue(new LayerRecord(Object.freeze(args)), extraDataEnd);
+}
+
+function indexLayerAddOns(buffer, start, end) {
+    const index = {};
+    let cursor = start;
+
+    while (cursor < end) {
+        const blockStart = cursor;
+        cursor = checkBlockSignature(buffer, cursor);
+
+        const key = buffer.toString('utf8', cursor, cursor += 4);
+        const blockSize = buffer.readUInt32BE(cursor);
+        cursor += 4;
+
+        const blockEnd = cursor + (blockSize % 2 == 0 ? blockSize : blockSize + 1);
+        index[key] = new AddOnBlock(key, blockStart, blockEnd - blockStart, cursor, blockSize);
+
+        cursor = blockEnd;
+    }
+
+    return Object.freeze(index);
+}
+
+function parseLayerAddOns(buffer, end, offset) {
+
+    const start = offset || 0;
+    const index = indexLayerAddOns(buffer, start, end || buffer.length);
+    const addOns = {
+        index: index
+    };
+
+    if (index[LayerAddOn.METADATA_SETTING]) {
+        ({value: addOns.metadata} = parseMetadataSettingBlock(buffer, index[LayerAddOn.METADATA_SETTING]));
+    }
+    if (index[LayerAddOn.LAYER_ID]) {
+        addOns.layerID = parseLayerIdBlock(buffer, index[LayerAddOn.LAYER_ID]);
+    }
+
+    return Object.freeze(addOns);
+}
+
+function parseLayerIdBlock(buffer, block) {
+    return buffer.readUInt32BE(block.dataOffset);
+}
+
+function parseMetadataSettingBlock(buffer, block) {
+    let cursor = block.dataOffset;
+
+    const count = buffer.readUInt32BE(cursor);
+    cursor += 4;
+
+    const metadata = {};
+
+    for (let i = 0; i < count; i++) {
+        cursor = checkBlockSignature(buffer, cursor);
+
+        const key = buffer.toString('utf8', cursor, cursor += 4);
+
+        // const copyOnSheetDuplication = buffer.readUInt8(cursor);
+        cursor += 4; // copy on sheet duplication 1 byte + 3 byte padding
+
+        const length = buffer.readUInt32BE(cursor);
+        cursor += 4;
+
+        const endOfBlock = cursor + length;
+
+        let value;
+        try {
+
+            const ndfnd = undefined;
+            ({value} = parseDescriptorBlock(buffer, new Block(ndfnd, ndfnd, ndfnd, ndfnd, cursor, length)));
+
+        } catch (error) {
+            if (error instanceof ParseError) {
+                console.log(`unexpected data found! 
+                ParseError inside Additional Layer Information Structure in Metadata setting block 
+                with key: ${key}  length: ${length}`);
+            } else {
+                throw error;
+            }
+        }
+
+        cursor = endOfBlock;
+
+        metadata[key] = value;
+    }
+
+    return new ReturnValue(Object.freeze(metadata), cursor);
 }
 
 function getSectionMarkers(buffer, offset) {
@@ -468,7 +773,7 @@ function checkSignature(buffer) {
     const signature = buffer.toString('utf8', 0, 4);
     const isPSD = signature == PSD_SIGNATURE;
     if (!isPSD) {
-        throw 'file is no PNG';
+        throw new ParseError('file is no PNG');
     }
 }
 
