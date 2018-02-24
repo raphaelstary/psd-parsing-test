@@ -512,7 +512,7 @@ function parseLayerMaskInfo(buffer, end, offset) {
     cursor += 2;
 
     if (infoLength > 0) {
-        // what should I do?
+        // todo what should I do?
     }
 
     const layers = [];
@@ -523,8 +523,60 @@ function parseLayerMaskInfo(buffer, end, offset) {
     }
     Object.freeze(layers);
 
-    console.log(layers);
+    for (let i = 0; i < layerCount; i++) {
+        const layer = layers[i];
+        const lines = layer.bottom - layer.top;
 
+        for (let u = 0; u < layer.channelCount; u++) {
+
+            const compression = buffer.readUInt16BE(cursor);
+            cursor += 2;
+            const data = [];
+
+            if (compression == 0) {
+                const length = (layer.bottom - layer.top) * (layer.right - layer.left);
+
+                for (let j = 0; j < length; j++) {
+                    data.push(buffer.readUInt8(cursor++));
+                }
+
+            } else if (compression == 1) {
+                const byteCounts = [];
+                for (let j = 0; j < lines; j++) {
+                    byteCounts.push(buffer.readUInt16BE(cursor));
+                    cursor += 2;
+                }
+
+                for (let j = 0; j < byteCounts.length; j++) {
+                    const line = [];
+                    const end = cursor + byteCounts[j];
+                    while (cursor < end) {
+                        const header = buffer.readInt8(cursor++);
+                        if (header < 0) {
+                            const value = buffer.readUInt8(cursor++);
+                            for (let k = 0; k < 1 - header; k++) {
+                                line.push(value);
+                            }
+                        } else {
+                            for (let k = 0; k < 1 + header; k++) {
+                                line.push(buffer.readUInt8(cursor++));
+                            }
+                        }
+                    }
+                    data.push(Object.freeze(line));
+                }
+
+            } else {
+                throw new ParseError('compression not implemented (yet): ' + compression);
+            }
+
+            const channel = layer.channels[u];
+            channel.data = Object.freeze(data);
+            Object.freeze(channel);
+        }
+    }
+
+    return layers;
 }
 
 function parseLayer(buffer, cursor) {
@@ -542,11 +594,12 @@ function parseLayer(buffer, cursor) {
 
     const channels = [];
     for (let i = 0; i < channelCount; i++) {
-        channels.push(Object.freeze({
+        channels.push({
             channelID: buffer.readInt16BE(cursor), length: buffer.readUInt32BE(cursor + 2)
-        }));
+        });
         cursor += 6;
     }
+    Object.freeze(channels);
 
     if (buffer.toString('utf8', cursor, cursor += 4) != BLOCK_SIGNATURE) {
         throw new ParseError('missing blend mode signature');
@@ -773,7 +826,7 @@ function checkSignature(buffer) {
     const signature = buffer.toString('utf8', 0, 4);
     const isPSD = signature == PSD_SIGNATURE;
     if (!isPSD) {
-        throw new ParseError('file is no PNG');
+        throw new ParseError('file is no PSD');
     }
 }
 
@@ -836,7 +889,7 @@ function parsePSD(file) {
 
             const result = startSection(chunk, parseLayerMaskInfo);
             if (result.ready) {
-                sectionReady('layerMaskInfo', result, chunk);
+                sectionReady('layers', result, chunk);
             }
 
         } else {
@@ -908,7 +961,7 @@ function parsePSD(file) {
         } else if (state == State.LAYER_MASK) {
             const result = resumeSection(buffer, parseLayerMaskInfo);
             if (result.ready) {
-                sectionReady('layerMaskInfo', result, buffer);
+                sectionReady('layers', result, buffer);
             }
         }
     });
