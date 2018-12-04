@@ -1,4 +1,5 @@
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 
 const PSD_SIGNATURE = '8BPS';
 const BLOCK_SIGNATURE = '8BIM';
@@ -21,7 +22,8 @@ const Resource = Object.freeze({
 });
 
 const LayerAddOn = Object.freeze({
-    METADATA_SETTING: 'shmd', LAYER_ID: 'lyid'
+    METADATA_SETTING: 'shmd',
+    LAYER_ID: 'lyid'
 });
 
 const Type = Object.freeze({
@@ -252,9 +254,7 @@ function parseList(buffer, cursor) {
 function parseID(buffer, cursor) {
     const length = buffer.readUInt32BE(cursor);
     cursor += 4;
-    return new ReturnValue(
-        length == 0 ? buffer.toString('utf8', cursor, cursor += 4) : buffer.toString('utf8', cursor, cursor += length),
-        cursor);
+    return new ReturnValue(length == 0 ? buffer.toString('utf8', cursor, cursor += 4) : buffer.toString('utf8', cursor, cursor += length), cursor);
 }
 
 function parseEnumerated(buffer, cursor) {
@@ -445,14 +445,10 @@ function parseHeader(buffer) {
     return header;
 }
 
-function parseResources(buffer, end, offset) {
+function parseResources(buffer, end = buffer.length, offset = 0) {
 
-    const start = offset || 0;
-    const index = indexResources(buffer, start + 4, end || buffer.length);
-
-    const resources = {
-        index: index
-    };
+    const index = indexResources(buffer, offset + 4, end);
+    const resources = {index};
 
     if (index[Resource.LAYER_STATE]) {
         resources.targetLayerIndex = parseLayerStateBlock(buffer, index[Resource.LAYER_STATE]);
@@ -500,15 +496,15 @@ function parseResources(buffer, end, offset) {
     return Object.freeze(resources);
 }
 
-function parseLayerMaskInfo(buffer, end, offset) {
-    let cursor = offset || 0;
+function parseLayerMaskInfo(buffer, end, offset = 0) {
+    let cursor = offset;
     cursor += 4;
 
     const infoLength = buffer.readUInt32BE(cursor);
     cursor += 4;
     const infoEnd = cursor + infoLength;
 
-    const layerCount = buffer.readUInt16BE(cursor);
+    const layerCount = Math.abs(buffer.readInt16BE(cursor));
     cursor += 2;
 
     if (infoLength > 0) {
@@ -665,7 +661,8 @@ function parseLayer(buffer, cursor) {
                 buffer.readUInt8(cursor + 1),
                 buffer.readUInt8(cursor + 2),
                 buffer.readUInt8(cursor + 3)
-            ]), dest: Object.freeze([
+            ]),
+            dest: Object.freeze([
                 buffer.readUInt8(cursor + 4),
                 buffer.readUInt8(cursor + 4 + 1),
                 buffer.readUInt8(cursor + 4 + 2),
@@ -695,20 +692,20 @@ function parseLayer(buffer, cursor) {
     }
 
     const args = {
-        top: top,
-        left: left,
-        bottom: bottom,
-        right: right,
-        channelCount: channelCount,
-        channels: channels,
-        blendMode: blendMode,
-        opacity: opacity,
-        clipping: clipping,
-        isProtected: isProtected,
-        hidden: hidden,
-        grayBlend: grayBlend,
-        channelBlendings: channelBlendings,
-        name: name
+        top,
+        left,
+        bottom,
+        right,
+        channelCount,
+        channels,
+        blendMode,
+        opacity,
+        clipping,
+        isProtected,
+        hidden,
+        grayBlend,
+        channelBlendings,
+        name
     };
 
     if (cursor < extraDataEnd && buffer.toString('utf8', cursor, cursor + 4) == BLOCK_SIGNATURE) {
@@ -740,13 +737,10 @@ function indexLayerAddOns(buffer, start, end) {
     return Object.freeze(index);
 }
 
-function parseLayerAddOns(buffer, end, offset) {
+function parseLayerAddOns(buffer, end = buffer.length, offset = 0) {
 
-    const start = offset || 0;
-    const index = indexLayerAddOns(buffer, start, end || buffer.length);
-    const addOns = {
-        index: index
-    };
+    const index = indexLayerAddOns(buffer, offset, end);
+    const addOns = {index};
 
     if (index[LayerAddOn.METADATA_SETTING]) {
         ({value: addOns.metadata} = parseMetadataSettingBlock(buffer, index[LayerAddOn.METADATA_SETTING]));
@@ -807,8 +801,78 @@ function parseMetadataSettingBlock(buffer, block) {
     return new ReturnValue(Object.freeze(metadata), cursor);
 }
 
-function getSectionMarkers(buffer, offset) {
-    const start = offset || 0;
+function parseImageData(channels, width, height, buffer, end = buffer.length, offset = 0) {
+    let cursor = offset;
+
+    const compression = buffer.readUInt16BE(cursor);
+    cursor += 2;
+
+    const length = end - cursor;
+
+    const pxData = new Uint8Array(width * height * channels);
+
+    if (compression == 0) {
+        console.log('compression 0');
+
+        for (let currentChannel = 0; currentChannel < channels; currentChannel++) {
+
+            const planeStart = cursor + currentChannel * width * height;
+            const planeLength = width * height;
+
+            for (let i = planeStart, x = 0; i < planeStart + planeLength; i++, x++) {
+                pxData[x * channels + currentChannel] = buffer.readUInt8(i);
+            }
+        }
+
+    } else if (compression == 1) {
+        console.log('compression 1');
+
+        const scanLines = channels * height;
+        const byteCounts = new Uint16Array(scanLines);
+        let totalBytes = 0;
+        for (let i = 0; i < scanLines; i++) {
+            totalBytes += byteCounts[i] = buffer.readUInt16BE(cursor);
+            cursor += 2;
+        }
+
+        let currentChannel = 0;
+        let y = 0;
+        for (let j = 0; j < byteCounts.length; j++) {
+            // const line = [];
+            let x = 0;
+            const end = cursor + byteCounts[j];
+            while (cursor < end) {
+                const header = buffer.readInt8(cursor++);
+                if (header < 0) {
+                    const value = buffer.readUInt8(cursor++);
+                    for (let k = 0; k < 1 - header; k++) {
+                        pxData[x * channels + y * width * channels + currentChannel] = value;
+                        x++;
+                    }
+                } else {
+                    for (let k = 0; k < 1 + header; k++) {
+                        const value = buffer.readUInt8(cursor++);
+                        pxData[x * channels + y * width * channels + currentChannel] = value;
+                        x++;
+                    }
+                }
+            }
+            y++;
+            if (y == height) {
+                currentChannel++;
+                y = 0;
+            }
+        }
+
+    } else {
+        throw new ParseError('compression not implemented (yet): ' + compression);
+    }
+
+    return pxData;
+}
+
+function getSectionMarkers(buffer, offset = 0) {
+    const start = offset;
     const dataLength = buffer.readUInt32BE(start);
     const totalLength = dataLength + 4;
     const end = start + totalLength;
@@ -819,7 +883,12 @@ function getSectionMarkers(buffer, offset) {
 }
 
 const State = Object.freeze({
-    NEXT: 1, HEADER: 2, RESOURCES: 3, LAYER_MASK: 4, READY: 5
+    NEXT: 1,
+    HEADER: 2,
+    RESOURCES: 3,
+    LAYER_MASK: 4,
+    IMG_DATA: 6,
+    READY: 7
 });
 
 function checkSignature(buffer) {
@@ -847,9 +916,16 @@ function parsePSD(file) {
     let headerQueued = true;
     let resourcesQueued = true;
     let layerMaskQueued = true;
+    let imageDataQueued = true;
 
-    function sectionReady(key, result, currentBuffer) {
+    function sectionReady(key, result, currentBuffer, done = false) {
         parsedData[key] = result.data;
+
+        if (done) {
+            state = State.READY;
+            ready(parsedData);
+            return;
+        }
 
         state = State.NEXT;
         const byteOffset = bufferLength - currentBuffer.length + result.usedChunkLength + markers.offsetNext;
@@ -868,8 +944,7 @@ function parsePSD(file) {
             headerQueued = false;
             state = State.HEADER;
 
-            const result = startSection(chunk, parseHeader,
-                new SectionMarkers(0, HEADER_LENGTH, HEADER_LENGTH, 4, chunk.length < HEADER_LENGTH));
+            const result = startSection(chunk, parseHeader, new SectionMarkers(0, HEADER_LENGTH, HEADER_LENGTH, 4, chunk.length < HEADER_LENGTH));
             if (result.ready) {
                 sectionReady('header', result, chunk);
             }
@@ -892,14 +967,41 @@ function parsePSD(file) {
                 sectionReady('layers', result, chunk);
             }
 
+        } else if (imageDataQueued) {
+            imageDataQueued = false;
+            state = State.IMG_DATA;
+
+            const header = parsedData.header;
+
+            const compression = chunk.readUInt16BE(0);
+            let length = 0;
+            if (compression == 0) {
+                length = 2 + header.channels * header.width * header.height;
+            } else {
+                const scanLines = header.channels * header.height;
+                const byteCounts = new Uint16Array(scanLines);
+                let totalBytes = 0;
+                for (let i = 0, c = 2; i < scanLines; i++, c += 2) {
+                    totalBytes += byteCounts[i] = chunk.readUInt16BE(c);
+                }
+                length = totalBytes + scanLines * 2 + 2;
+            }
+            const imgDataSectionMarkers = new SectionMarkers(0, length, length, 0, chunk.length < length);
+            const result = startSection(chunk,
+                parseImageData.bind(undefined, header.channels, header.width, header.height),
+                imgDataSectionMarkers);
+            if (result.ready) {
+                sectionReady('img', result, chunk, true);
+            }
+
         } else {
             state = State.READY;
             ready(parsedData);
         }
     }
 
-    function startSection(chunk, parseSection, sectionMarkers) {
-        markers = sectionMarkers || getSectionMarkers(chunk);
+    function startSection(chunk, parseSection, sectionMarkers = getSectionMarkers(chunk)) {
+        markers = sectionMarkers;
         if (markers.buffering) {
             section = Buffer.allocUnsafe(markers.length);
             cursor = chunk.copy(section);
@@ -963,6 +1065,13 @@ function parsePSD(file) {
             if (result.ready) {
                 sectionReady('layers', result, buffer);
             }
+
+        } else if (state == State.IMG_DATA) {
+            const header = parsedData.header;
+            const result = resumeSection(buffer, parseImageData.bind(undefined, header.channels, header.width, header.height));
+            if (result.ready) {
+                sectionReady('img', result, buffer, true);
+            }
         }
     });
 
@@ -972,7 +1081,9 @@ function parsePSD(file) {
 }
 
 function ready(data) {
-    console.log(`parsed data ready: ${JSON.stringify(data, undefined, 4)}`);
+    fsPromises.writeFile('output.pixeldata', Buffer.from(parsedData.img.buffer))
+        .then(() => console.log(`success: output file created`))
+        .catch(reason => console.log('error: ' + reason));
 }
 
-parsePSD('test-3.psd');
+parsePSD('test-5.psd');
